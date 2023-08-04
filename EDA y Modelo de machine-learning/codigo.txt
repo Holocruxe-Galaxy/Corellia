@@ -1,0 +1,670 @@
+te muestro como quedo el codigo:
+data.py
+from pymongo import MongoClient
+import pandas as pd
+from datetime import datetime
+import tensorflow as tf
+from pymongo.errors import PyMongoError
+import time 
+#import os
+
+# Definir columnas categóricas
+CATEGORICAL_COLUMNS = [
+    'tienes_agenda_planeada', 'tienes_reuniones_planeadas',
+    'ayunaste_hoy', 'tienes_deadline_hoy',
+    'alguna_tarea_te_llevo_mas_tiempo',
+    'hay_tareas_que_se_pueden_automatizar',
+    'tuviste_que_ir_a_algun_lugar_para_hacer_tus_tareas',
+    'usaste_alguna_metodologia_para_optimizar_el_tiempo',
+    'fueron_satisfactorias_las_reuniones',
+    'pudiste_resolver_tus_dudas_sobre_el_trabajo',
+    'tuviste_reuniones_planificadas',
+    'calificacion_descansos'
+]
+
+NUMERIC_COLUMNS = []
+
+# Conexión a la base de datos MongoDB
+db_connection = None
+
+
+def connect_to_db():
+    global db_connection
+
+    # Si ya hay una conexión, devolverla directamente
+    if db_connection is not None:
+        return db_connection
+
+    try:
+        # Intentar establecer una conexión a la base de datos
+        client = MongoClient('localhost', 27017)
+        db = client.holobot_database_model_3
+
+        # Asignar la conexión a la variable global
+        db_connection = db
+
+        return db
+    except Exception as e:
+        # Capturar cualquier excepción que pueda ocurrir durante la conexión
+        # Puedes personalizar el manejo de errores según tus necesidades
+        print(f"Error al conectar a la base de datos: {e}")
+        return None
+
+
+# Recuperar los documentos de la coleccion
+def get_collection_data(db, collection_name):
+    try:
+        collection = db[collection_name]
+        data = collection.find()
+        df = pd.DataFrame.from_records(data)
+        return df
+    except Exception as e:
+        print(
+            f"Error al obtener datos de la colección {collection_name}: {str(e)}")
+        return None
+
+
+def get_data_from_db(collection_name):
+    try:
+        # Conectar a la base de datos
+        db = connect_to_db()
+        # Obtener los datos de la colección especificada
+        df = get_collection_data(db, collection_name)
+        # Convertir columna 'fecha_hora' a tipo datetime
+        df['fecha'] = pd.to_datetime(df['fecha_hora']).dt.date
+
+        return df
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error y regresar un DataFrame vacío
+        print(f"Error al obtener los datos de la base de datos: {e}")
+        return pd.DataFrame()
+
+
+# Insertar fecha de último entrenamiento
+
+def insert_last_date(user_id):
+    try:
+        db = connect_to_db()
+        last_date_collections = db['date_last_training']
+        document = {'user_id': user_id, 'fecha_hora': datetime.now()}
+        last_date_collections.insert_one(document)
+        print("Registro insertado exitosamente.")
+    except PyMongoError as e:
+        print(f"Error al insertar el registro: {e}")
+
+
+# Filtrar los registros creados después de la fecha de referencia
+def filter_new_records(df, fecha_ultimo_entrenamiento):
+    try:
+        # Convertir la fecha de último entrenamiento a formato datetime
+        fecha_ultimo_entrenamiento = pd.to_datetime(fecha_ultimo_entrenamiento)
+        # Eliminar duplicados basados en la columna 'fecha_hora'
+        df = df.drop_duplicates(subset='fecha_hora')
+        # Reiniciar el índice del DataFrame
+        df.reset_index(drop=True, inplace=True)
+        # Convertir la columna 'fecha_hora' a formato datetime
+        df['fecha_hora'] = pd.to_datetime(df['fecha_hora'])
+        # Filtrar los nuevos registros basados en la fecha de último entrenamiento
+        df_nuevos_registros = df[df['fecha_hora'] > fecha_ultimo_entrenamiento]
+
+        return df_nuevos_registros
+
+    except Exception as e:
+        # Si ocurre alguna excepción, imprimir el mensaje de error y retornar un DataFrame vacío
+        print(f"Error en la función: {e}")
+        return pd.DataFrame()
+
+
+# Funcion general para el procesamiento de la informacion
+# Entrega un dataframe concatenando las respuestas de los 2 formularios y eliminando las columnas redundantes
+def data_base():
+    try:
+        # Conectar a la base de datos utilizando un contexto (with)
+        db = connect_to_db()
+        # Obtener los datos de las colecciones
+        db = connect_to_db()
+        df_initial_answer = get_collection_data(db, 'initial_questions')
+        df_final_answer = get_collection_data(db, 'final_questions')
+        # Convertir columna 'fecha_hora' a tipo datetime en ambos DataFrames
+        df_initial_answer['fecha'] = pd.to_datetime(
+            df_initial_answer['fecha_hora']).dt.date
+        df_final_answer['fecha'] = pd.to_datetime(
+            df_final_answer['fecha_hora']).dt.date
+
+        # Dropear columnas innecesarias en df_final_answer
+        df_final_answer = df_final_answer.drop(
+            columns=['_id', 'fecha_hora', 'nombre_usuario_slack', 'nombre_completo'])
+
+        # Concatenar los dataframes
+        df = pd.merge(df_initial_answer, df_final_answer,
+                      on=['id_de_slack', 'fecha'])
+
+        # Dropear la columna 'fecha' (ya se ha utilizado para hacer el merge)
+        df = df.drop(columns=['fecha'])
+
+        return df
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error y regresar un DataFrame vacío
+        print(f"Error al obtener los datos de la base de datos: {e}")
+        return pd.DataFrame()
+
+
+# Funcion para la obtencion de la ultima fecha de entrenamiento
+def last_train(user_id):
+    db = connect_to_db()
+    # Reemplaza 'nombre_de_tu_coleccion' con el nombre real de tu colección en MongoDB
+    collection = db['date_last_training']
+    # Aquí, utiliza los métodos de PyMongo para acceder a los datos en la colección
+    document = collection.find_one({'user_id': user_id})
+
+    if document is not None:
+        fecha_ultimo_entrenamiento = document['fecha_hora']
+        fecha_ultimo_entrenamiento = fecha_ultimo_entrenamiento.strftime('%Y-%m-%d')
+        return fecha_ultimo_entrenamiento
+    else:
+        # Manejo si no se encuentra ningún documento con el 'user_id' dado
+        fecha_cero = '2023-01-01'
+        return fecha_cero
+
+# Función para la obtención de los registros de la colección user_data
+def user_data():
+    try:
+        # Obtener la conexión a la base de datos
+        db = connect_to_db()
+        # Obtener los datos de la colección 'user_data'
+        # Reemplaza 'get_collection_data' con tu función para obtener datos
+        df_users_info = get_collection_data(db, 'user_data')
+        # print(df_users_info.columns)
+        return df_users_info
+
+    except Exception as e:
+        print("Error al obtener los datos de la base de datos:", e)
+        return pd.DataFrame()  # Devuelve un DataFrame vacío en caso de error
+
+main.py:
+#from sys import last_value
+import data
+import model
+import os
+from datetime import datetime
+import pandas as pd
+import joblib
+import time
+
+
+def main():
+    # importar la base de datos limpia y concatenada
+    db = data.data_base()
+    user_data = data.user_data()
+    date = datetime.now().strftime('%Y-%m-%d')
+
+    # se itera por cada usuario registrado en la coleccion 'user_data'
+    for user in user_data['id_de_slack']:
+        user = str(user)
+        nombre = 'model_' + user
+
+        # verificacion si el usuario ya tiene un modelo entrenado
+        if os.path.exists(nombre):
+            # reentrenar modelo
+            print('este modelo ya esta generado', user)
+
+            # verificacion si el usuario tiene registro del dia
+            # Hacer una copia del DataFrame
+            input_user = db[db['id_de_slack'] == user].copy()
+
+            # Convertir la columna 'fecha_hora' al formato '%Y-%m-%d' utilizando .dt.strftime sin asignar
+            input_user['fecha_hora'] = pd.to_datetime(input_user['fecha_hora']).dt.strftime('%Y-%m-%d')
+
+            # verifica si el usuario tiene registros nuevos
+            if date in input_user['fecha_hora'].values:
+                # print('La fecha está presente en la columna "fecha_hora".')
+
+                # reentrenar el modelo con los nuevos registros
+                # verificamos la ultima fecha de entrenamiento del modelo
+                last_train = data.last_train(user)
+                # tomamos los registros posteriores a la fecha
+                df_new_inputs = data.filter_new_records(input_user, last_train)
+                # reentrenamos el modelo
+                modelo = joblib.load(nombre)
+                model.reentrenar_modelo(modelo, df_new_inputs)
+
+            else:
+                print('El usuario no cuenta con nuevos registros')
+
+        else:
+            # se debe establacer si el usuario cuenta con registros suficientes
+            # Hacer una copia del DataFrame
+            input_user = db[db['id_de_slack'] == user].copy()
+            # verificar si el usuario tiene mas de 30 registros
+
+            if input_user.shape[0] >= 30:
+                # entrenamiento y guardar el nuevo modelo
+                columnas = ['_id', 'fecha_hora',
+                            'nombre_usuario_slack', 'nombre_completo']
+                input_user.drop(columnas, axis=1, inplace=True)
+                # print(input_user.columns)
+                # print(input_user.head(3))
+                model.ejecucion_modelo(input_user, user)
+
+            else:
+                # Hacer la verificacion si el area cuenta con mas de 30 registros
+                user_area = user_data.loc[user_data['id_de_slack']
+                                          == user]['area']
+                # Identificar usuarios de la misma area
+                area_value = user_area.iloc[0] if not user_area.empty else None
+                # Identifica cantidad de registros de usuarios de la misma area
+                users_area = user_data.loc[user_data['area']
+                                           == area_value, 'id_de_slack'].tolist()
+                data_total_area = db[db['id_de_slack'].isin(users_area)]
+                # Verifica si la data de los usuarios de la misma area es suficiente
+                if data_total_area.shape[0] >= 30:
+                    # Entrena y guarda el modelo con los datos del area.
+                    columnas = ['_id', 'fecha_hora',
+                                'nombre_usuario_slack', 'nombre_completo']
+                    data_total_area.drop(columnas, axis=1, inplace=True)
+                    model.ejecucion_modelo(data_total_area, user)
+                else:
+                    print('No existe datos suficientes para generar una predicción')
+
+
+if __name__ == "__main__":
+    main()
+
+model.py:
+from pymongo import MongoClient
+import pandas as pd
+from datetime import datetime
+import tensorflow as tf
+import os
+import joblib
+
+# Definir constantes
+EPOCHS = 32
+BATCH_SIZE = 32
+INPUT_SHAPE = (29,)
+
+CATEGORICAL_COLUMNS = [
+    'tienes_agenda_planeada', 'tienes_reuniones_planeadas',
+    'ayunaste_hoy', 'tienes_deadline_hoy',
+    'alguna_tarea_te_llevo_mas_tiempo',
+    'hay_tareas_que_se_pueden_automatizar',
+    'tuviste_que_ir_a_algun_lugar_para_hacer_tus_tareas',
+    'usaste_alguna_metodologia_para_optimizar_el_tiempo',
+    'fueron_satisfactorias_las_reuniones',
+    'pudiste_resolver_tus_dudas_sobre_el_trabajo',
+    'tuviste_reuniones_planificadas',
+    'calificacion_descansos'
+]
+NUMERIC_COLUMNS = []
+
+# Definicion de variables
+# Establece los datos que se van a tomar para entrenar y evaluar el modelo
+
+
+def cargar_datos(df_usuario):
+    try:
+        #df_usuario = df.loc[df['id_de_slack'] == user]
+        total_registros = len(df_usuario)
+        porcentaje = 0.7
+        filtro1 = int(total_registros * porcentaje)
+
+        dftrain = df_usuario.head(filtro1)  # Conjunto de entrenamiento
+        # Conjunto de evaluación
+        dfeval = df_usuario.tail(total_registros - filtro1)
+
+        y_train = dftrain.pop('productividad_hoy')
+        y_eval = dfeval.pop('productividad_hoy')
+
+        columnas_df = set(df_usuario.columns)
+        columnas_categoricas = set(CATEGORICAL_COLUMNS)
+        columnas_faltantes = columnas_categoricas - columnas_df
+
+        if columnas_faltantes:
+            raise ValueError(
+                f"Las siguientes columnas categóricas no se encontraron en el dataframe: {columnas_faltantes}")
+
+        return dftrain, dfeval, y_train, y_eval, CATEGORICAL_COLUMNS, NUMERIC_COLUMNS
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error y regresar None para indicar que ha ocurrido un error.
+        print(f"Error al cargar los datos: {e}")
+        return None, None, None, None, None, None
+
+
+# Transforma los datos de las columnas de categoricas a numericas
+def transformar_datos(dftrain, dfeval, CATEGORICAL_COLUMNS):
+    try:
+        dftrain = dftrain.drop('con_que_areas_te_vas_a_reunir', axis=1)
+        dfeval = dfeval.drop('con_que_areas_te_vas_a_reunir', axis=1)
+
+        dftrain = dftrain.drop('productividad_hoy', axis=1)
+        dfeval = dfeval.drop('productividad_hoy', axis=1)
+
+        dftrain = pd.get_dummies(dftrain, columns=CATEGORICAL_COLUMNS)
+        dftrain = dftrain.drop('id_de_slack', axis=1)
+
+        dfeval = pd.get_dummies(dfeval, columns=CATEGORICAL_COLUMNS)
+        dfeval = dfeval.drop('id_de_slack', axis=1)
+
+        return dftrain, dfeval
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error y regresar None para indicar que ha ocurrido un error.
+        print(f"Error al transformar los datos: {e}")
+        return None, None
+
+
+# Crea el modelo de regresion
+def crear_modelo(dftrain, y_train):
+    try:
+        feature_columns = []
+        for feature_name in dftrain.columns:
+            feature_columns.append(tf.feature_column.numeric_column(
+                feature_name, dtype=tf.float32))
+
+        model = tf.keras.Sequential([
+            tf.keras.layers.Dense(1, input_shape=(len(feature_columns),))
+        ])
+
+        model.compile(loss='mse', optimizer='sgd')
+
+        model.fit(dftrain, y_train, epochs=32, batch_size=32, verbose=0)
+
+        return model
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error y regresar None para indicar que ha ocurrido un error.
+        print(f"Error al crear el modelo: {e}")
+        return None
+
+
+# Guarda el modelo en el mismo directorio en el que se ejecuta el codigo
+def guardar_modelo(model, user):
+    try:
+        nombre = 'model_' + user
+        joblib.dump(model, str(nombre))
+
+        # Mostrar mensaje de éxito
+        print("Modelo guardado exitosamente.")
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error.
+        print(f"Error al guardar el modelo: {e}")
+
+
+# Funcion principal que ejecuta y guarda el modelo
+def ejecucion_modelo(df, user):
+    try:
+        dftrain, dfeval, y_train, y_eval, CATEGORICAL_COLUMNS, _ = cargar_datos(df)
+
+        if dftrain is None:
+            # Ocurrió un error al cargar los datos.
+            return
+
+        dftrain, dfeval = transformar_datos(dftrain, dfeval, CATEGORICAL_COLUMNS)
+
+        if dftrain is None:
+            # Ocurrió un error al transformar los datos.
+            return
+
+        model = crear_modelo(dftrain, y_train)
+
+        if model is None:
+            # Ocurrió un error al crear el modelo.
+            return
+
+        guardar_modelo(model, user)
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error.
+        print(f"Error durante la ejecución del modelo: {e}")
+
+
+def reentrenar_modelo(model, df_new_inputs):
+    try:
+        # Tomamos el último registro del DataFrame df_new_inputs
+        # df_nuevo = df_new_inputs.tail(1)
+        y_df_nuevo = df_new_inputs.pop('productividad_hoy')
+
+        # Eliminamos las columnas innecesarias para el entrenamiento
+        columnas_a_dropear = ['_id', 'fecha_hora', 'id_de_slack', 'nombre_usuario_slack',
+                              'nombre_completo', 'con_que_areas_te_vas_a_reunir']
+        x_df_nuevo = df_new_inputs.drop(columnas_a_dropear, axis=1)
+
+        # Transformamos los datos nuevos en dummies
+        x_df_nuevo = pd.get_dummies(x_df_nuevo, columns=CATEGORICAL_COLUMNS)
+
+        # Reentrenamos el modelo con el nuevo registro
+        model.compile(optimizer=tf.keras.optimizers.Adam(),loss=tf.keras.losses.mean_squared_error)
+        model.fit(x_df_nuevo, y_df_nuevo, epochs=10, batch_size=32, verbose=0)
+
+        return model
+
+    except Exception as e:
+        # Manejo de errores: imprimir el error y regresar None para indicar que ha ocurrido un error.
+        print(f"Error al reentrenar el modelo: {e}")
+        return None
+
+
+def retrain_model(df_new_inputs, user):
+    # Obtener el último registro de df_new_inputs
+    # df_nuevo = df_new_inputs.tail(1).copy()
+
+    # Verificar si la columna objetivo 'productividad_hoy' está presente en df_nuevo
+    if 'productividad_hoy' not in df_nuevo.columns:
+        # Si no está presente, copiar el valor de 'productividad_hoy' del DataFrame original df_new_inputs
+        last_productivity = df_new_inputs.loc[df_new_inputs['id_de_slack'] == user, 'productividad_hoy'].values[-1]
+        df_nuevo['productividad_hoy'] = last_productivity
+
+    # Ahora asegurémonos de que el DataFrame solo contenga las columnas relevantes para el modelo
+    relevant_columns = ['tienes_agenda_planeada', 'tienes_reuniones_planeadas', 'ayunaste_hoy',
+                        'tienes_deadline_hoy', 'alguna_tarea_te_llevo_mas_tiempo',
+                        'hay_tareas_que_se_pueden_automatizar',
+                        'tuviste_que_ir_a_algun_lugar_para_hacer_tus_tareas',
+                        'usaste_alguna_metodologia_para_optimizar_el_tiempo',
+                        'fueron_satisfactorias_las_reuniones',
+                        'pudiste_resolver_tus_dudas_sobre_el_trabajo',
+                        'tuviste_reuniones_planificadas', 'calificacion_descansos']
+
+    df_nuevo = pd.get_dummies(df_nuevo, columns=relevant_columns)
+
+    # Eliminamos la columna 'id_de_slack' ya que no es necesaria para el reentrenamiento
+    df_nuevo = df_nuevo.drop('id_de_slack', axis=1)
+
+    # Cargar el modelo previamente entrenado
+    #model = tf.keras.models.load_model('model_' + user)
+    nombre = 'model_' + user
+    model = joblib.load(nombre)
+
+    # Obtener las características de entrada y la variable objetivo para el reentrenamiento
+    y_train = df_nuevo.pop('productividad_hoy')
+
+    # Reentrenar el modelo usando el último registro
+    model.fit(df_nuevo, y_train, epochs=10, batch_size=32)
+
+    # Guardar el modelo reentrenado
+    model.save('model_' + user)
+
+    # Mostrar mensaje de éxito
+    print(f"Modelo para el usuario {user} reentrenado correctamente.")
+
+prediction.py:
+import main
+import joblib
+import pandas as pd
+import tensorflow as tf
+import data
+from datetime import datetime
+from pymongo.errors import PyMongoError
+import time
+
+# Cargo la respuesta
+def convert_to_df(nueva_respuesta):
+    try:
+        nueva_rta_df = pd.DataFrame(nueva_respuesta)
+    except Exception as e:
+        print("Error al tratar de convertir los datos a dataframe:", e)
+        nueva_rta_df = pd.DataFrame()  
+    return nueva_rta_df
+
+
+# Selecciono el usuario
+def select_user(df):
+    try:
+        user = df['id_de_slack'].values[0]
+    except Exception as e:
+        print("Error al seleccionar un usuario:", e)
+        user = None       
+    return user
+
+
+# Selecciono el modelo del usuario
+def select_user_model(user):
+    try:
+        nombre_del_modelo = 'model_' + user
+    except Exception as e:
+        print("Error al tratar de seleccionar el modelo del usuario:", e)
+        nombre_del_modelo = 'model_'
+    return nombre_del_modelo
+
+
+#Selecciono la direccion del modelo 
+direccion = 'C:/Users/agusv/' # -------- CAMBIAR SEGUN LA PC ---------------------------------------------------
+def select_model_dir(model_name):
+    try:
+        direccion_model = direccion + model_name
+    except Exception as e:
+        print("Error al seleccionar la dirección del modelo:", e)
+        direccion_model = None
+    return direccion_model
+
+
+# Selecciono el modelo
+def select_model(model_dir):
+    try:
+        model = joblib.load(str(model_dir))
+    except Exception as e:
+        print("Error al seleccionar el modelo:", e)
+        model = None
+    return model
+
+
+# Obtener las características y etiquetas
+def df_y(df):
+    try:
+        y_df_nuevo = df['productividad_hoy']
+    except Exception as e:
+        print("Error al obtener nuevo df_y:", e)
+        y_df_nuevo = None
+    return y_df_nuevo
+
+
+def df_x(df):
+    try:
+        columnas_a_dropear = ['_id', 'fecha_hora', 'id_de_slack', 'nombre_usuario_slack', 'nombre_completo', 'con_que_areas_te_vas_a_reunir', 'productividad_hoy']
+        x_df_nuevo = df.drop(columnas_a_dropear, axis=1)
+    except Exception as e:
+        print("Error al obtener nuevo df_x:", e)
+        x_df_nuevo = None
+    return x_df_nuevo
+
+
+def get_dummies_df_x(x_df_nuevo):
+    try:
+        x_df_dummies = pd.get_dummies(x_df_nuevo, columns = [
+                        'tienes_agenda_planeada', 'tienes_reuniones_planeadas',
+                        'ayunaste_hoy', 'tienes_deadline_hoy',
+                        'alguna_tarea_te_llevo_mas_tiempo',
+                        'hay_tareas_que_se_pueden_automatizar',
+                        'tuviste_que_ir_a_algun_lugar_para_hacer_tus_tareas',
+                        'usaste_alguna_metodologia_para_optimizar_el_tiempo',
+                        'fueron_satisfactorias_las_reuniones',
+                        'pudiste_resolver_tus_dudas_sobre_el_trabajo',
+                        'tuviste_reuniones_planificadas',
+                        'calificacion_descansos'
+                    ])
+    except Exception as e:
+        print("Error al transoformar df_x a dummies:", e)
+        x_df_dummies = None
+    return x_df_dummies
+
+
+# Lista de columnas en dfeval
+columnas_dfeval = ['tienes_agenda_planeada_No', 'tienes_agenda_planeada_Si',
+        'tienes_reuniones_planeadas_No', 'tienes_reuniones_planeadas_Si',
+        'ayunaste_hoy_No', 'ayunaste_hoy_Si', 'tienes_deadline_hoy_No',
+        'tienes_deadline_hoy_Si', 'alguna_tarea_te_llevo_mas_tiempo_No',
+        'alguna_tarea_te_llevo_mas_tiempo_Si',
+        'hay_tareas_que_se_pueden_automatizar_No',
+        'hay_tareas_que_se_pueden_automatizar_Si',
+        'tuviste_que_ir_a_algun_lugar_para_hacer_tus_tareas_No',
+        'tuviste_que_ir_a_algun_lugar_para_hacer_tus_tareas_Si',
+        'usaste_alguna_metodologia_para_optimizar_el_tiempo_No',
+        'usaste_alguna_metodologia_para_optimizar_el_tiempo_Si',
+        'fueron_satisfactorias_las_reuniones_No',
+        'fueron_satisfactorias_las_reuniones_No tuve ninguna reunión',
+        'fueron_satisfactorias_las_reuniones_Si',
+        'pudiste_resolver_tus_dudas_sobre_el_trabajo_No',
+        'pudiste_resolver_tus_dudas_sobre_el_trabajo_No tuve ninguna reunion',
+        'pudiste_resolver_tus_dudas_sobre_el_trabajo_Si',
+        'pudiste_resolver_tus_dudas_sobre_el_trabajo_Tuve reuniones, pero, no tenía dudas por aclarar',
+        'tuviste_reuniones_planificadas_No',
+        'tuviste_reuniones_planificadas_Si',
+        'calificacion_descansos_Insuficientes pero bien distribuidos',
+        'calificacion_descansos_Insuficientes y mal distribuidos',
+        'calificacion_descansos_Suficientes pero mal distribuidos',
+        'calificacion_descansos_Suficientes y bien distribuidos']
+
+
+def predict(nueva_respuesta):
+
+    # Cargo la respuesta
+    nueva_rta_df = convert_to_df(nueva_respuesta)
+
+    # Selecciono el usuario
+    user = select_user(nueva_rta_df)
+
+    # Selecciono el modelo del usuario
+    nombre_del_modelo = select_user_model(user)
+
+    #Selecciono la direccion del modelo 
+    model_dir = select_model_dir(nombre_del_modelo)
+
+    # Selecciono el modelo
+    modelo = select_model(model_dir)
+
+    # Obtener las características y etiquetas
+    y_df_nuevo = df_y(nueva_rta_df)
+    x_df_nuevo = df_x(nueva_rta_df)
+
+    # df_x dummies
+    x_df_nuevo = get_dummies_df_x(x_df_nuevo)
+
+    # Asegurarse que x_df_nuevo tenga las mismas columnas que dfeval y en el mismo orden
+    x_df_nuevo = x_df_nuevo.reindex(columns=columnas_dfeval, fill_value=0)
+
+    # Compilar el modelo
+    optimizer = tf.keras.optimizers.Adam()
+    loss_fn = tf.keras.losses.mean_squared_error
+    modelo.compile(optimizer=optimizer, loss=loss_fn)
+
+    # Entrenar el modelo con los nuevos datos
+    modelo.fit(x_df_nuevo, y_df_nuevo, epochs=10, batch_size=32)
+
+    # Hacer la prediccion
+    prediction = int(modelo.predict(x_df_nuevo))
+    
+    return prediction
+
+
+def save_last_prediction(user_id, prediction):
+    try:
+        db = data.connect_to_db()
+        last_date_collections = db['predictions_history']
+        document = {'user_id': user_id, 'fecha_hora': datetime.now(), 'prediction': prediction}
+        last_date_collections.insert_one(document)
+        print("Registro insertado exitosamente.")
+    except PyMongoError as e:
+        print(f"Error al insertar el registro: {e}")
