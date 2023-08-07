@@ -55,8 +55,7 @@ Para el proyecto se decidieron utilizar las siguientes tecnologías:
 ## Desarrollo del bot
 
 El bot se programó y desarrolló integramente en lenguaje **`Python`**. 
-Se pueden visualizar los códigos realizados en el siguiente
-[archivo](https://github.com/fedeandresg/proyecto_slack_bot/blob/main/Desarrollo_Bot/holobot.py) 
+Se pueden visualizar los códigos realizados en los archivos data.py, model.py, predictions.py y main.py
 
 ## MongoDB
 
