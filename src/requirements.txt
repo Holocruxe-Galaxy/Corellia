@@ -1,0 +1,7 @@
+pymongo
+pandas
+flask
+datetime
+tensorflow
+joblib
+os
